@@ -58,7 +58,10 @@ window.__ModuleLoader__.load({
       stalePrefix: 'Mappings for workspaces that no longer exist',
       staleHint: 'they are ignored',
       saved: 'Saved.',
+      savedFollows: 'now follows the global default',
+      savedInline: 'Saved',
       saveFailed: 'The Host refused the write; the previous value is still in effect.',
+      saveFailedInline: 'Not saved',
       presetsError: 'Could not read the preset list. Change the selection once it loads.',
       loading: 'Loading…',
     }
@@ -81,7 +84,10 @@ window.__ModuleLoader__.load({
       stalePrefix: '以下映射对应的工作区已不存在',
       staleHint: '会被忽略',
       saved: '已保存。',
+      savedFollows: '现在跟随全局默认',
+      savedInline: '已保存',
       saveFailed: '宿主拒绝了这次写入，原值仍然生效。',
+      saveFailedInline: '未保存',
       presetsError: '预设列表读取失败。列表加载好后才能改这一行。',
       loading: '加载中…',
     }
@@ -116,7 +122,43 @@ window.__ModuleLoader__.load({
       .wsp-badge-custom { color: var(--dsw-alias-brand-primary);
                           border-color: var(--dsw-alias-brand-primary); }
       .wsp-check { accent-color: var(--dsw-alias-brand-primary); }
-      .wsp-notice { font-size: 12px; color: var(--dsw-alias-state-success-primary); }
+
+      /* ── 保存反馈 ──────────────────────────────────────────────────
+         旧版是一条 12px 小字挂在页面最底部，离刚改的下拉框很远、很容易看不见。
+         现在分三层：
+           1) 顶部横幅 .wsp-toast —— 大号、有底色边框，停顿可读
+           2) 该行左侧色条 .wsp-row-flash —— 告诉你"是这一行"
+           3) 行内胶囊 .wsp-pill —— 就在下拉框旁边
+         三层同时出现，用颜色 + 位置把"刚保存成功"说清楚。 */
+      .wsp-toast { display: flex; align-items: center; gap: 8px;
+                   padding: 10px 14px; font-size: 13px; font-weight: 600;
+                   border-radius: 10px; border: 1px solid transparent; }
+      .wsp-toast-ok { color: var(--dsw-alias-state-success-primary);
+                      border-color: var(--dsw-alias-state-success-primary);
+                      background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); }
+      .wsp-toast-error { color: var(--dsw-alias-state-error-primary);
+                         border-color: var(--dsw-alias-state-error-primary);
+                         background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
+      .wsp-toast-icon { flex: none; font-size: 15px; line-height: 1; }
+      .wsp-toast-text { flex: 1 1 auto; min-width: 0; }
+      .wsp-toast-detail { font-weight: 400; opacity: .85; }
+
+      /* 刚保存的那一行：左侧色条 + 淡底，3.5 秒后消失 */
+      .wsp-row-flash { position: relative; }
+      .wsp-row-flash::before { content: ''; position: absolute; left: -14px; top: 2px; bottom: 2px;
+                               width: 3px; border-radius: 2px;
+                               background: var(--dsw-alias-state-success-primary); }
+      .wsp-row-flash-ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent); }
+      .wsp-row-flash-error::before { background: var(--dsw-alias-state-error-primary); }
+      .wsp-row-flash-error { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent); }
+
+      /* 下拉框旁的胶囊 */
+      .wsp-pill { display: inline-flex; align-items: center; gap: 4px;
+                  margin-top: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600;
+                  border-radius: 999px; border: 1px solid currentColor; }
+      .wsp-pill-ok { color: var(--dsw-alias-state-success-primary); }
+      .wsp-pill-error { color: var(--dsw-alias-state-error-primary); }
+
       .wsp-error  { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
       .wsp-warn   { font-size: 12px; color: var(--dsw-alias-state-warn-primary); }
     `
@@ -265,7 +307,10 @@ window.__ModuleLoader__.load({
         }
       }, [readPresets])
 
-      // 提示条：3.5 秒自动消失，用 seq 保证连续操作重新计时
+      // 提示：3.5 秒自动消失，用 seq 保证连续操作重新计时。
+      //
+      // notice 里带 workspaceId —— 保存反馈要**贴着刚改的那一行**显示，
+      // 而不是统一堆到页面底部（旧版就是这样，用户反馈看不见）。
       const [notice, setNotice] = React.useState(null)
       const seqRef = React.useRef(0)
       const noticeSeq = notice?.seq
@@ -283,17 +328,25 @@ window.__ModuleLoader__.load({
         try {
           const ok = await setWorkspacePreset(workspaceId, presetId)
           seqRef.current += 1
-          setNotice(
-            ok
-              ? { kind: 'ok', seq: seqRef.current, text: t('saved') }
-              : { kind: 'error', seq: seqRef.current, text: t('saveFailed') },
-          )
+          setNotice({
+            kind: ok ? 'ok' : 'error',
+            seq: seqRef.current,
+            workspaceId,
+            text: ok ? t('saved') : t('saveFailed'),
+            detail: ok
+              ? presetId === ''
+                ? t('savedFollows')
+                : presetName(presets.rows, presetId)
+              : '',
+          })
         } catch (error) {
           seqRef.current += 1
           setNotice({
             kind: 'error',
             seq: seqRef.current,
+            workspaceId,
             text: String(error?.message ?? error),
+            detail: '',
           })
         } finally {
           setBusy((prev) => {
@@ -319,6 +372,33 @@ window.__ModuleLoader__.load({
         children.push(h('div', { className: 'wsp-hint', key: 'not-ready' }, t('notReady')))
       } else if (!writable) {
         children.push(h('div', { className: 'wsp-hint', key: 'read-only' }, t('readOnly')))
+      }
+
+      // ── 顶部横幅：保存反馈的第一层 ──────────────────────────────
+      //
+      // 紧跟在标题下面（不放到页面底部），字号 13px + 加粗 + 底色 + 边框，
+      // 扫一眼就能看到。
+      if (notice !== null && notice !== undefined) {
+        children.push(
+          h(
+            'div',
+            {
+              className: `wsp-toast ${notice.kind === 'ok' ? 'wsp-toast-ok' : 'wsp-toast-error'}`,
+              key: 'toast',
+              role: 'status',
+              'aria-live': 'polite',
+            },
+            h(
+              'span',
+              { className: 'wsp-toast-icon', 'aria-hidden': 'true' },
+              notice.kind === 'ok' ? '✓' : '!',
+            ),
+            h('span', { className: 'wsp-toast-text' }, notice.text),
+            notice.detail === '' || notice.detail === undefined
+              ? null
+              : h('span', { className: 'wsp-toast-detail' }, notice.detail),
+          ),
+        )
       }
 
       // ── 总开关 ──────────────────────────────────────────────────
@@ -391,10 +471,21 @@ window.__ModuleLoader__.load({
             )
           }
 
+          // 刚保存过的这一行：左侧色条 + 淡底（第二层反馈）
+          const flashing =
+            notice !== null && notice !== undefined && notice.workspaceId === ws.workspaceId
+          const rowClass =
+            'wsp-row' +
+            (flashing
+              ? ` wsp-row-flash ${
+                  notice.kind === 'ok' ? 'wsp-row-flash-ok' : 'wsp-row-flash-error'
+                }`
+              : '')
+
           rows.push(
             h(
               'div',
-              { className: 'wsp-row', key: ws.workspaceId },
+              { className: rowClass, key: ws.workspaceId },
               h(
                 'div',
                 { className: 'wsp-meta' },
@@ -405,6 +496,18 @@ window.__ModuleLoader__.load({
                   badge,
                 ),
                 h('div', { className: 'wsp-path', title: ws.path }, ws.path),
+                // 行内胶囊（第三层）：就在下拉框旁边，明确说"这一行保存了"
+                flashing
+                  ? h(
+                      'span',
+                      {
+                        className: `wsp-pill ${
+                          notice.kind === 'ok' ? 'wsp-pill-ok' : 'wsp-pill-error'
+                        }`,
+                      },
+                      notice.kind === 'ok' ? `✓ ${t('savedInline')}` : `! ${t('saveFailedInline')}`,
+                    )
+                  : null,
               ),
               h(
                 'select',
@@ -436,17 +539,6 @@ window.__ModuleLoader__.load({
       }
 
       children.push(h('div', { className: 'wsp-block', key: 'map' }, ...rows))
-
-      // ── 提示 ────────────────────────────────────────────────────
-      if (notice !== null && notice !== undefined) {
-        children.push(
-          h(
-            'div',
-            { className: notice.kind === 'ok' ? 'wsp-notice' : 'wsp-error', key: 'notice' },
-            notice.text,
-          ),
-        )
-      }
 
       return h('div', { className: 'wsp-page' }, ...children)
     }

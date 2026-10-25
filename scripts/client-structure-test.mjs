@@ -133,6 +133,69 @@ async function renderStable(Component, props, maxRounds = 30) {
   return tree
 }
 
+/**
+ * 挂载组件，跑完整初始化，返回一个可以「触发事件 → 等重渲染 → 再看树」的句柄。
+ *
+ * 这是为了测 `onChange` 之后的 UI（保存反馈）：光看初始渲染树测不到
+ * 「点了下拉之后页面长什么样」。
+ *
+ * @param {(props: any) => any} Component
+ * @param {object} props
+ * @returns {Promise<{ tree: () => any, settle: () => Promise<any>, trigger: (find: (el: any) => boolean, event: object) => Promise<any> }>}
+ */
+async function mount(Component, props) {
+  const inst = {
+    state: {},
+    refs: {},
+    effects: {},
+    pendingEffects: [],
+    cursor: 0,
+    dirty: true,
+  }
+  let tree
+
+  const settle = async () => {
+    for (let round = 0; round < 30; round += 1) {
+      currentInstance = inst
+      inst.cursor = 0
+      inst.pendingEffects = []
+      inst.dirty = false
+      tree = Component(props)
+
+      const effects = inst.pendingEffects
+      for (const { index, callback, deps } of effects) {
+        const cleanup = callback()
+        inst.effects[index] = { deps, cleanup: typeof cleanup === 'function' ? cleanup : undefined }
+      }
+      if (inst.dirty) continue
+      if (round === 0 && effects.length > 0) {
+        await Promise.resolve()
+        await Promise.resolve()
+        if (inst.dirty) continue
+      }
+      break
+    }
+    currentInstance = null
+    return tree
+  }
+
+  await settle()
+
+  return {
+    tree: () => tree,
+    settle,
+    /** 在树里找到第一个匹配的元素，调用它的 handler，然后等页面稳定。 */
+    trigger: async (find, event) => {
+      const found = collect(tree, find)[0]
+      if (found === undefined) throw new Error('trigger: 没找到目标元素')
+      const handler = found.props.onChange ?? found.props.onClick
+      if (typeof handler !== 'function') throw new Error('trigger: 该元素没有 onChange/onClick')
+      await handler(event)
+      return settle()
+    },
+  }
+}
+
 /** 深度遍历元素树，收集某类元素。 */
 function collect(tree, predicate, out = []) {
   if (tree === null || tree === undefined || typeof tree !== 'object') return out
@@ -511,6 +574,145 @@ await t('enabled=false 时复选框未勾选', async () => {
   await t('映射写入是局部 set，不整块覆盖', () => {
     const op = recorded.mutations[0][0]
     eq(op.path.length, 2, '路径段数（整块覆盖会是 1 段）')
+  })
+}
+
+// ══════════════════════════════════════════════════════════════
+// 4. 保存反馈（本次改动就是为它：旧版只有页面底部一行 12px 小字，看不见）
+// ══════════════════════════════════════════════════════════════
+
+const hasClass = (token) => (el) =>
+  typeof el.props?.className === 'string' && el.props.className.split(/\s+/).includes(token)
+
+/** 挂载一份真实注册的组件，返回可交互句柄。 */
+async function mountPage() {
+  const { ctx, recorded } = makeClientCtx({ snapshot: SNAPSHOT_EMPTY })
+  mod.apply(ctx)
+  const registration = recorded.slotRegistrations[0]
+  const face = registration.options.inject()
+  const view = await mount(registration.component, {
+    ...face,
+    useForm: (selector) => selector(SNAPSHOT_EMPTY),
+    useWorkspaces: (selector) => selector({ items: WS }),
+    t: tFn,
+  })
+  return { view, recorded }
+}
+
+{
+  const { view } = await mountPage()
+
+  await t('初始没有保存反馈', () => {
+    eq(collect(view.tree(), hasClass('wsp-toast')).length, 0)
+    eq(collect(view.tree(), hasClass('wsp-pill')).length, 0)
+    eq(collect(view.tree(), hasClass('wsp-row-flash')).length, 0)
+  })
+
+  // ── 改第一行 ─────────────────────────────────────────────────
+  const selects = () => collect(view.tree(), isSelect)
+  await t('改动下拉后出现顶部横幅（第一层）', async () => {
+    await view.trigger(isSelect, { target: { value: 'creative' } })
+    const toasts = collect(view.tree(), hasClass('wsp-toast'))
+    eq(toasts.length, 1, '横幅数量')
+    assert(toasts[0].props.className.includes('wsp-toast-ok'), '应是成功样式')
+    assert(flattenText(toasts[0]).includes('✓'), '缺对勾图标')
+    assert(flattenText(toasts[0]).includes('[saved]'), '缺 saved 文案')
+  })
+
+  await t('横幅在页面顶部（总开关之前），不在底部', () => {
+    const page = view.tree().children
+    const toastIndex = page.findIndex(hasClass('wsp-toast'))
+    const enableIndex = page.findIndex(
+      (el) => el.$$el === true && hasClass('wsp-block')(el) && flattenText(el).includes('[enable]'),
+    )
+    assert(toastIndex >= 0, '没找到横幅')
+    assert(enableIndex >= 0, '没找到总开关')
+    assert(toastIndex < enableIndex, `横幅应在总开关之前（${toastIndex} vs ${enableIndex}）`)
+  })
+
+  await t('横幅带 role=status / aria-live（读屏可感知）', () => {
+    const toast = collect(view.tree(), hasClass('wsp-toast'))[0]
+    eq(toast.props.role, 'status')
+    eq(toast.props['aria-live'], 'polite')
+  })
+
+  await t('横幅带上写入的值，不是只有"已保存"三个字', () => {
+    const toast = collect(view.tree(), hasClass('wsp-toast'))[0]
+    assert(flattenText(toast).includes('Creative'), `应含 preset 名：${flattenText(toast)}`)
+  })
+
+  await t('改过的那一行高亮（第二层）', () => {
+    const flashed = collect(view.tree(), hasClass('wsp-row-flash'))
+    eq(flashed.length, 1, '高亮行数')
+    assert(flashed[0].props.className.includes('wsp-row-flash-ok'), '应是成功色条')
+    assert(flattenText(flashed[0]).includes('One'), '应高亮第一行')
+  })
+
+  await t('行内胶囊就在该行（第三层）', () => {
+    const pills = collect(view.tree(), hasClass('wsp-pill'))
+    eq(pills.length, 1, '胶囊数量')
+    assert(flattenText(pills[0]).includes('[savedInline]'), '缺行内保存文案')
+  })
+
+  await t('同一时刻只高亮一行：改第二行后第一行不再高亮', async () => {
+    // 第二行是 ws-2（title 为空，显示 path）
+    const secondSelect = () => collect(view.tree(), isSelect)[1]
+    const found = secondSelect()
+    await found.props.onChange({ target: { value: 'creative' } })
+    await view.settle()
+
+    const flashed = collect(view.tree(), hasClass('wsp-row-flash'))
+    eq(flashed.length, 1, '同时只高亮一行')
+    assert(flattenText(flashed[0]).includes('two'), `应高亮第二行：${flattenText(flashed[0])}`)
+  })
+
+  await t('选「跟随全局默认」时横幅 detail 说"现在跟随全局默认"', async () => {
+    const secondSelect = collect(view.tree(), isSelect)[1]
+    await secondSelect.props.onChange({ target: { value: '' } })
+    await view.settle()
+    const toast = collect(view.tree(), hasClass('wsp-toast'))[0]
+    assert(
+      flattenText(toast).includes('[savedFollows]'),
+      `应提示跟随全局：${flattenText(toast)}`,
+    )
+  })
+}
+
+// ── 写入被拒（mutate 返回 false）→ 错误反馈 ──────────────────
+{
+  const { ctx, recorded } = makeClientCtx({ snapshot: SNAPSHOT_EMPTY })
+  // 让 mutate 返回 false，模拟宿主拒绝写入
+  const originalGet = ctx.configForms.get
+  ctx.configForms.get = (id) => {
+    const form = originalGet(id)
+    return { ...form, mutate: async () => false }
+  }
+  mod.apply(ctx)
+  const registration = recorded.slotRegistrations[0]
+
+  await t('宿主拒绝写入 → 红色错误横幅 + 失败胶囊 + 红色高亮', async () => {
+    const face = registration.options.inject()
+    const view = await mount(registration.component, {
+      ...face,
+      useForm: (selector) => selector(SNAPSHOT_EMPTY),
+      useWorkspaces: (selector) => selector({ items: WS }),
+      t: tFn,
+    })
+    await view.trigger(isSelect, { target: { value: 'creative' } })
+
+    const toasts = collect(view.tree(), hasClass('wsp-toast'))
+    eq(toasts.length, 1)
+    assert(toasts[0].props.className.includes('wsp-toast-error'), '应是错误样式')
+    assert(flattenText(toasts[0]).includes('[saveFailed]'), '缺失败文案')
+
+    const pills = collect(view.tree(), hasClass('wsp-pill'))
+    assert(pills.length === 1 && flattenText(pills[0]).includes('[saveFailedInline]'), '缺失败胶囊')
+
+    const flashed = collect(view.tree(), hasClass('wsp-row-flash'))
+    assert(
+      flashed.length === 1 && flashed[0].props.className.includes('wsp-row-flash-error'),
+      '应是红色色条',
+    )
   })
 }
 

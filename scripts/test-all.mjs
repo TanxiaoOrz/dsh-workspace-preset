@@ -110,6 +110,10 @@ if (schemaDir === undefined) {
   }
 }
 
+// 变异测试：证明"保存反馈"那几条断言真的会红。
+// 不放进常规门禁就没人知道断言是不是假的，所以它是默认跑的。
+ok = runSuite('变异检查（断言是否真的会红）', join(here, 'mutation-check.mjs'), root) && ok
+
 process.stdout.write('\n')
 if (ok) {
   process.stdout.write('全部通过 ✅\n')
