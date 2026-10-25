@@ -38,34 +38,52 @@
 ## 安装
 
 本插件是一个 DSH **bundle 插件**（`package.json` 里带 `dsh.bundle` 与 `dsh.client`）。
-装进某个 profile 即可。
 
-### 方式一：从 GitHub 装（推荐）
+### 方式一：`dsh plugin add`（推荐）
 
 ```powershell
-cd "$env:DSH_HOME\profiles\web"
-
-# 1) 把本包加进 profile 依赖
-pnpm add github:TanxiaoOrz/dsh-workspace-preset
-
-# 2) 把包名加进 profile package.json 的 dsh.profile.bundles 数组
-#    （手工编辑，或在 dsh web 的「设置 → 插件」里启用）
+dsh plugin --profile web add github:TanxiaoOrz/dsh-workspace-preset
 ```
 
-`package.json` 里加这一项：
+**这一条命令就够了**，不用再手工改任何文件：
 
-```json
-"dsh": {
-  "profile": {
-    "bundles": [
-      "...",
-      "dsh-workspace-preset"
-    ]
-  }
-}
+| 它替你做的事 | 说明 |
+|---|---|
+| 装依赖 | 转给 pnpm 在 profile 目录里跑 `add` |
+| **自动加入 `dsh.profile.bundles`** | 安装成功后 `reconcile()` 发现这个新依赖带 `dsh.bundle`，就把它追加进 bundles 数组 |
+| 校验补丁文件 | 对 `dsh.bundle.patch` 声明的每个补丁文件跑一遍 `loadOverlayPatches`，坏补丁当场报错而不是启动时炸 |
+| 校验 peer 兼容性 | 不兼容会给出 `dsh plugin allow-version` 的提示，而不是默默装上一个会崩的版本 |
+
+装完**重启 `dsh web`**，打开「设置 → 工作区预设」。
+
+卸载同样是命令，**也会自动把 bundles 里的项删掉**：
+
+```powershell
+dsh plugin --profile web remove dsh-workspace-preset
 ```
 
-装完**重启 `dsh web`**，然后打开「设置 → 工作区预设」。
+> `dsh plugin` 的第一个 `--profile` 是它的必需参数，其余参数**原样转给 pnpm**
+> （`add` / `remove` / `why` / `list` …），所以你也可以用它做只读排查：
+> `dsh plugin --profile web why dsh-workspace-preset`。
+
+#### 装完怎么确认它真的被装载了
+
+```powershell
+dsh --profile web --dump-config | Select-String 'workspace-preset' -Context 2,3
+```
+
+应该看到条目被解析成 `file:///…/node_modules/dsh-workspace-preset/lib/index.js`。
+**这一步很关键**：如果那里显示的是裸包名或指向 dsh 安装目录，说明 `name` 锚定错了
+（见下面那条注意），此时"条目在、`apply()` 不执行"。
+
+再看 Config 有没有被宿主读出来：
+
+```powershell
+dsh --profile web --dump-config-schema | Select-String 'workspace-preset' -Context 0,3
+```
+
+`"status": "schema"` 表示宿主已成功导入插件并读到 `Config` —— 这是**插件代码真的执行过**
+的强证据（`status: "absent"` 则反之）。
 
 > **不需要**手改 `cordis.patch.yml`：包自带 `cordis.patch.yml` 作为 bundle 层，
 > 其中的 `name` 写的是 `./lib/index.js`（相对包根）。
@@ -89,6 +107,19 @@ Copy-Item "$src\client.js","$src\package.json","$src\cordis.patch.yml" $nm -Forc
 (Get-FileHash "$src\lib\index.js" -Algorithm MD5).Hash -eq
   (Get-FileHash "$nm\lib\index.js" -Algorithm MD5).Hash
 ```
+
+或者更快：直接把 profile 里那份换成指向源码目录的 junction，
+改完刷新页面即可（Host 侧改动要重启 `dsh web`）。
+
+### 方式三：离线 / 内网（不经过 GitHub）
+
+`dsh plugin add` 也接受本地路径，所以可以先把仓库拷到本机再装：
+
+```powershell
+dsh plugin --profile web add D:\Program Code\plugins\WorkspacePreset
+```
+
+代价是它记的是**本地路径**而不是版本，之后 `pnpm install` 依赖那个目录还在。
 
 ---
 
@@ -234,19 +265,21 @@ node scripts/client-structure-test.mjs   # 客户端结构：31 条，含迷你 
 
 ## 回滚
 
-一行停用，行为**完全等于**宿主原生（本插件不修改任何宿主状态，
-只在 `agent/created` 里"择机切一次"）：
+**首选：一条命令**，会同时清掉依赖和 bundles 项：
 
-```json
-// profiles/web/package.json → dsh.profile.bundles 里删掉 "dsh-workspace-preset"
+```powershell
+dsh plugin --profile web remove dsh-workspace-preset
 ```
 
-或保留依赖但禁用条目（profile 的 `cordis.patch.yml`）：
+**或者只停用、保留安装**（改 profile 的 `cordis.patch.yml`）：
 
 ```yaml
 - id: workspace-preset
   disabled: true
 ```
+
+两种方式的行为都**完全等于**宿主原生 —— 本插件不修改任何宿主状态，
+只在 `agent/created` 里"择机切一次"，而这一步可被 `enabled: false` 短路。
 
 ---
 
@@ -259,13 +292,28 @@ node scripts/client-structure-test.mjs   # 客户端结构：31 条，含迷你 
 |---|---|---|
 | `配置页实现设计.md` §3.5 用 `ctx.workspaces.list.getSnapshot()` 读工作区列表 | `settings.section` 槽位有官方 `standardProps`，其中就带 `useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>`（`cordis_inspect_query(client, Slots, listSubTree, settings.section)` 核实）。用官方 prop 比自己读 service 更稳：不依赖别人插件的生命周期 | 少 30 行代码，且不会在 `dsh-client-ui-workspace` 卸载时把设置页带挂 |
 | `实施与验收.md` §0 要 30 分钟探针实验（Q3：resume 时 `select` 会不会 `locked`） | 直接读源码得到确定答案：`select()` 的锁定判据就是 `turnBoundary` 投影（`openTurnStartSeq !== null \|\| lastTurn > 0`），而复用空白会话时 `lastTurn === 0` | 省掉探针；R1 退化为"同一段代码顺带覆盖"，即 D1 选 a |
-| 文档只要求纯逻辑单测 | 补了客户端结构测试（含迷你 React，能真正跑到 `useEffect` 之后的渲染状态）和 Host 端到端冒烟（真 `import`、真 `apply`、真 `agent/created`） | 发现并修掉一个真 bug（见下） |
+| 文档只要求纯逻辑单测 | 补了客户端结构测试（含迷你 React，能真正跑到 `useEffect` 之后的渲染状态）和 Host 端到端冒烟（真 `import`、真 `Config` 解析、真 `agent/created`） | 发现并修掉三类真问题（见下） |
 
-**那个被测试逮到的 bug**：第一版客户端测试用「什么都不做的 React 替身」，
-`useEffect` 不执行 → preset 花名册永远是空数组 → 下拉只有"跟随全局默认"一项。
-这暴露的是**测试替身过弱**，而不是插件逻辑错；但它同时说明"只测结构、不测渲染后状态"
-会漏掉整整一类问题。现在的替身会跑 effect、会在 setState 后重渲染，
-所以「花名册加载后下拉含全部 preset」「broken 项被 disabled」这类断言才真的有效。
+**测试逮到的三类真问题**（每一类都靠"真跑"才暴露，只看代码看不出来）：
+
+1. **测试替身过弱**：第一版客户端测试用「什么都不做的 React 替身」，
+   `useEffect` 不执行 → preset 花名册永远是空数组 → 下拉只有"跟随全局默认"一项。
+   现在的替身会跑 effect、会在 setState 后重渲染，
+   「花名册加载后下拉含全部 preset」「broken 项被 disabled」这类断言才真的有效。
+
+2. **手造的 volatile 引用形状是错的**：Host 冒烟第一版手写 `{ get: () => value }`
+   当 Config 字段。实测宿主给的引用是**只读 `{ get }`**，语义是"每次现读"。
+   手造替身能过、真引用形状不对 —— 这是最典型的"测试自己骗自己"。
+   现在一律走 `plugin.Config(rawPatchConfig)`，即宿主 `apply()` 真正收到的东西。
+
+3. **`cwd: undefined` 会触发解构默认值**：`makeAgent({ cwd: undefined })` 里的
+   `undefined` 被默认值替换，静默变成"有 cwd"，让「无 cwd → 不切」这条断言**假绿**。
+   改用显式 `noCwd` 开关。这类"绿得没道理"的断言比红的更危险。
+
+另外 `dsh plugin add` 这条路径也实测过：装出来的包自测同样 105 条全绿，
+`--dump-config` 里条目正确解析成 `file:///…/lib/index.js`，
+`--dump-config-schema` 显示 `status: "schema"`（宿主成功导入插件并读到 Config）。
+`dsh plugin remove` 会同步清掉 bundles 项。
 
 ---
 
