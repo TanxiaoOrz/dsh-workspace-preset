@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-preset",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "按工作区指定新会话的 agent preset；未配置的工作区回落到宿主全局默认",
   "type": "module",
   "main": "lib/index.js",
@@ -38,10 +38,18 @@
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-agent-preset-registry": { "optional": true },
-    "@deepseek-ai/dsh-session": { "optional": true },
-    "@deepseek-ai/dsh-workspace": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true }
+    "@deepseek-ai/dsh-agent-preset-registry": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-workspace": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   },
   "dsh": {
     "bundle": {
