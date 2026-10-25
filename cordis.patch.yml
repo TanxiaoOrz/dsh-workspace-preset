@@ -1,0 +1,23 @@
+# dsh-workspace-preset 的 bundle 补丁：把这个插件挂进 profile。
+#
+# ⚠️ name 必须写「相对包根目录」的路径，不能写裸包名！
+#
+# 原因（dsh-app-boot 的 anchorInsertedPluginNames / mountRootInclude）：
+#   - 裸包名（'dsh-workspace-preset'）会交给 cordis loader 的
+#     internal.import(name, bareModuleBaseUrl) 解析，而 bareModuleBaseUrl 指向
+#     **dsh 安装目录**的 package.json，不是 profile 目录。结果：bundle 层能加载
+#     （--dump-config 里看得到条目），但 apply() 永远不执行。
+#   - 只有 './'、'../' 或绝对路径开头的 name 才会被转成 file:// 绝对 URL，
+#     从而正确指向本包自身。
+#
+# './' 相对于**本文件所在目录**（即包根），所以 './lib/index.js' 永远正确，
+# 与包装在哪个 profile、pnpm 用软链还是实体目录都无关。
+- insert:
+    - id: workspace-preset
+      name: './lib/index.js'
+      # 首次装载时这里是空映射：所有工作区都跟随宿主全局默认。
+      # 具体映射由「设置 → 工作区预设」写入，或在此手填：
+      #   config:
+      #     enabled: true
+      #     presetByWorkspace:
+      #       "<workspaceId>": "<presetId>"
