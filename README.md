@@ -5,6 +5,10 @@
 
 宿主基线：`@deepseek-ai/dsh-web-app 0.2.0-rc.2`（`@deepseek-ai/cordis 4.0.4`）。
 
+> **状态**：Host 与 Client 两侧均已实现，程序化测试 93 条全绿（纯逻辑 41 / 客户端结构 31 / Host 端到端冒烟 21）。
+> **真机验收尚未进行** —— 真实会话创建、真实 `agentPresets.select`、设置页真实渲染还没在浏览器里跑过。
+> 历史设计文档留在 [`docs/`](docs/)，它们记录的是**实现前的取证与方案**，与最终代码有少量偏差（见文末「与设计文档的偏差」）。
+
 ---
 
 ## 它解决什么
@@ -34,29 +38,39 @@
 ## 安装
 
 本插件是一个 DSH **bundle 插件**（`package.json` 里带 `dsh.bundle` 与 `dsh.client`）。
-装进某个 profile 即可，**不需要重启 DSH 之外的东西**。
+装进某个 profile 即可。
 
 ### 方式一：从 GitHub 装（推荐）
 
 ```powershell
-# 在目标 profile 目录里执行
 cd "$env:DSH_HOME\profiles\web"
 
 # 1) 把本包加进 profile 依赖
-pnpm add github:TanxiaoOrz/dsh-workspace-preset --allow-build=dsh-workspace-preset
+pnpm add github:TanxiaoOrz/dsh-workspace-preset
 
 # 2) 把包名加进 profile package.json 的 dsh.profile.bundles 数组
 #    （手工编辑，或在 dsh web 的「设置 → 插件」里启用）
 ```
 
-然后把 profile 的 `cordis.patch.yml` 里这条加进去（**也可以不加**，
-只靠 bundles 数组即可，因为包自带 `cordis.patch.yml` 作为 bundle 层）：
+`package.json` 里加这一项：
 
-```yaml
-- id: workspace-preset
-  name: "./lib/index.js"     # 相对包根，不要写裸包名
+```json
+"dsh": {
+  "profile": {
+    "bundles": [
+      "...",
+      "dsh-workspace-preset"
+    ]
+  }
+}
 ```
 
+装完**重启 `dsh web`**，然后打开「设置 → 工作区预设」。
+
+> **不需要**手改 `cordis.patch.yml`：包自带 `cordis.patch.yml` 作为 bundle 层，
+> 其中的 `name` 写的是 `./lib/index.js`（相对包根）。
+> 只有在你要**手动指定映射初始值**时才往 profile 的 patch 里加 `config:` 块。
+>
 > **为什么 `name` 必须写相对路径**：裸包名会被 cordis loader 按
 > `bareModuleBaseUrl`（指向 **dsh 安装目录**的 package.json）解析，
 > 结果是"条目看得见、`apply()` 永远不执行"。只有 `./`、`../` 或绝对路径开头的
@@ -75,8 +89,6 @@ Copy-Item "$src\client.js","$src\package.json","$src\cordis.patch.yml" $nm -Forc
 (Get-FileHash "$src\lib\index.js" -Algorithm MD5).Hash -eq
   (Get-FileHash "$nm\lib\index.js" -Algorithm MD5).Hash
 ```
-
-或在同一个 profile 里直接改成绝对路径软链，改完刷新页面即可。
 
 ---
 
@@ -174,8 +186,11 @@ dsh-workspace-preset/
 │   ├── resolve.js          # 纯函数：映射查询 / 空白判定 / volatile 读取
 │   └── target.js           # 门禁判定（纯函数，G0–G7）
 ├── scripts/
-│   └── resolve-test.mjs    # 纯逻辑单测（不 import 任何 @deepseek-ai/*）
-└── README.md
+│   ├── resolve-test.mjs           # 纯逻辑单测（41 条，零依赖）
+│   ├── client-structure-test.mjs  # 客户端结构（31 条，含迷你 React）
+│   ├── smoke-host.mjs             # Host 端到端冒烟（21 条，真 import）
+│   └── test-all.mjs               # 一键跑三套
+└── docs/                          # 可行性评估 / 设计方案 / 配置页设计 / 实施验收 / 取证索引
 ```
 
 `lib/*.js` 里的 `./resolve.js`、`./target.js` 是**相对导入**，所以
@@ -186,11 +201,19 @@ dsh-workspace-preset/
 ## 自测
 
 ```powershell
-node scripts/resolve-test.mjs     # 纯逻辑：41 条断言，零依赖
+node scripts/test-all.mjs        # 三套全跑
+node scripts/resolve-test.mjs    # 纯逻辑：41 条断言，零依赖
+node scripts/client-structure-test.mjs   # 客户端结构：31 条，含迷你 React 渲染
 ```
 
-只测纯逻辑，不 import 任何 `@deepseek-ai/*` —— 因为那些包只在 profile 的
-`node_modules` 里，从工作区直接 import 会 `ERR_MODULE_NOT_FOUND`。
+第三套（`scripts/smoke-host.mjs`）会真实 `import lib/index.js`（连同
+`lib/schema.js` → `@deepseek-ai/schemastery`），用假 `ctx` 跑完整 `apply` +
+`agent/created` 链路。`test-all.mjs` 在找不到 `schemastery` 时会自动搭一个临时目录
+（junction 到 profile 里的那份）再跑，所以从工作区也能一键全跑。
+
+**当前状态：93 条断言全部通过。** 但注意：
+**这是程序化测试，不是真机验收** —— 真实会话创建、真实 `agentPresets.select`、
+设置页真实渲染都还没在浏览器里跑过（见下面的验收清单）。
 
 ### 实机验收清单
 
@@ -214,11 +237,35 @@ node scripts/resolve-test.mjs     # 纯逻辑：41 条断言，零依赖
 一行停用，行为**完全等于**宿主原生（本插件不修改任何宿主状态，
 只在 `agent/created` 里"择机切一次"）：
 
+```json
+// profiles/web/package.json → dsh.profile.bundles 里删掉 "dsh-workspace-preset"
+```
+
+或保留依赖但禁用条目（profile 的 `cordis.patch.yml`）：
+
 ```yaml
 - id: workspace-preset
-  name: "./lib/index.js"
   disabled: true
 ```
+
+---
+
+## 与设计文档的偏差
+
+`docs/` 里的四份文档是**实现前**的取证稿。实际落地时发现三处与文档假设不符，
+以代码为准：
+
+| 文档假设 | 实际情况 | 影响 |
+|---|---|---|
+| `配置页实现设计.md` §3.5 用 `ctx.workspaces.list.getSnapshot()` 读工作区列表 | `settings.section` 槽位有官方 `standardProps`，其中就带 `useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>`（`cordis_inspect_query(client, Slots, listSubTree, settings.section)` 核实）。用官方 prop 比自己读 service 更稳：不依赖别人插件的生命周期 | 少 30 行代码，且不会在 `dsh-client-ui-workspace` 卸载时把设置页带挂 |
+| `实施与验收.md` §0 要 30 分钟探针实验（Q3：resume 时 `select` 会不会 `locked`） | 直接读源码得到确定答案：`select()` 的锁定判据就是 `turnBoundary` 投影（`openTurnStartSeq !== null \|\| lastTurn > 0`），而复用空白会话时 `lastTurn === 0` | 省掉探针；R1 退化为"同一段代码顺带覆盖"，即 D1 选 a |
+| 文档只要求纯逻辑单测 | 补了客户端结构测试（含迷你 React，能真正跑到 `useEffect` 之后的渲染状态）和 Host 端到端冒烟（真 `import`、真 `apply`、真 `agent/created`） | 发现并修掉一个真 bug（见下） |
+
+**那个被测试逮到的 bug**：第一版客户端测试用「什么都不做的 React 替身」，
+`useEffect` 不执行 → preset 花名册永远是空数组 → 下拉只有"跟随全局默认"一项。
+这暴露的是**测试替身过弱**，而不是插件逻辑错；但它同时说明"只测结构、不测渲染后状态"
+会漏掉整整一类问题。现在的替身会跑 effect、会在 setState 后重渲染，
+所以「花名册加载后下拉含全部 preset」「broken 项被 disabled」这类断言才真的有效。
 
 ---
 

@@ -12,6 +12,7 @@
     "lib/**/*.js",
     "client.js",
     "cordis.patch.yml",
+    "scripts/**/*.mjs",
     "README.md"
   ],
   "keywords": [
@@ -26,7 +27,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node scripts/resolve-test.mjs"
+    "test": "node scripts/test-all.mjs",
+    "test:logic": "node scripts/resolve-test.mjs",
+    "test:client": "node scripts/client-structure-test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent-preset-registry": ">=0.2.0-rc.2 <0.3.0",
